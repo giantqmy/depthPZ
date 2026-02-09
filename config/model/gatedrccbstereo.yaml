@@ -1,0 +1,35 @@
+model_args:
+  model_name: "gatedrccbstereo"
+  refinement_iterations: 4
+  refinement_iterations_hd: 2
+
+  input_cams: ["gated", "rccb"]
+  input_channels:
+    gated: 5
+    rgb: 3
+    rccb: 3
+  encoder_lightweight: false
+
+  # ENCODERS
+  hidden_dim: 128
+  out_channels: 256
+
+  # RUM
+  rum_cor_planes: 36
+  rum_mask_size: 4
+
+  # CSM
+  csm_init: true
+  do_pose_update: true
+
+  ref_modality: 'gated'
+  ref_side: 'left'
+  max_depth:
+    gated: 220
+    rgb: 220
+    rccb: 220
+  min_depth:
+    gated: 1
+    rgb: 1
+    rccb: 1
+

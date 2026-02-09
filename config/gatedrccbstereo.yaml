@@ -1,0 +1,34 @@
+defaults:
+  - dataset: gatedrccbstereo
+  - dataloader: default
+  - model: gatedrccbstereo
+  - optimizer: default
+  - train: gatedrccbstereo
+  - _self_
+
+seed: 123
+
+resume: false
+resume_path: "checkpoints/gatedrccbstereo.pt"
+
+dataset_name: gatedstereo
+num_views: 4
+img_H: 544
+img_W: 960
+accumulated_points: false
+num_samples: -1 # -1 uses full dataset
+fusion_batch_size: 1
+
+backend_args: null
+
+data_root: null
+ann_file: file_lists/train_gatedstereo.pkl
+ann_file_val: file_lists/test_day_gatedstereo.pkl
+data_prefix:
+  pts: velodyne
+  img: images
+
+# Where Hydra writes outputs (log files, config copies, etc.)
+hydra:
+  run:
+    dir: outputs/${oc.env:USER}/${now:%Y-%m-%d}/${now:%H-%M-%S}

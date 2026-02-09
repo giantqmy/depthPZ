@@ -1,0 +1,35 @@
+max_iters: 1000000
+log_interval: 20
+ckpt_interval: 2000
+amp: false
+
+output_dir: ${hydra:run.dir}
+
+resume: ${resume}
+resume_path: ${resume_path}
+resume_strict: false
+
+loss:
+  berhu: true
+  photo: true
+
+tensorboard:
+  enable: true
+  logdir: ${hydra:run.dir}/tb
+  image_interval: 25
+
+  # how to visualize ref_input per modality
+  ref_input_layout:
+    default:
+      active_rgb: [0, 1, 2]
+      passive: []
+      sparse_depth: 3
+      depth_max: 150.0
+      radius: 3
+
+    gated:
+      active_rgb: [0, 1, 2]
+      passive: [3, 4]
+      sparse_depth: 5
+      depth_max: 150.0
+      radius: 3

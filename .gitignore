@@ -1,0 +1,78 @@
+# --- Your project-specific folders ---
+outputs/
+other/
+file_lists/
+dataset/outputs/
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pclprof
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+
+# --- Build / packaging ---
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+wheelhouse/
+
+# --- Test / coverage / logs ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+*.log
+
+# --- Jupyter / checkpoints ---
+.ipynb_checkpoints/
+
+# --- Large / generated data artifacts (common ML/DS) ---
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.tflite
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.npz
+*.npy
+*.parquet
+*.feather
+*.arrow
+*.csv
+*.tsv
+*.jsonl
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.gz
+*.raw
+*.jpg
+*.mp4
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# --- Editor / IDE: PyCharm / IntelliJ ---
+.idea/
+*.iml
+out/

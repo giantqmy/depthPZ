@@ -1,0 +1,114 @@
+_target_: dataset.gatedrccbstereo_dataset.GatedRCCBStereoDataset
+data_root: ${data_root}
+ann_file: ${ann_file}
+ann_file_val: ${ann_file_val}
+data_prefix: ${data_prefix}
+test_mode: false
+batch_scene_pattern: null
+queue_length: 0
+future_length: 0
+rand_frame_interval: (1,)
+deterministic_frame_interval: 1
+use_random_interval: false
+num_samples: ${num_samples}
+overfit_single_image: false
+batch_size: ${fusion_batch_size}
+pipeline:
+  cfg_list:
+    - _target_: dataset.transforms.GatedStereoLoadPointsFromBin
+
+    - _target_: dataset.transforms.GatedStereoLoadMultiViewImageFromFiles
+      to_float32: true
+      sample_probability:
+        gated_left: 0.25
+        gated_right: 0.25
+        rccb_left: 0.25
+        rccb_right: 0.25
+      num_views_to_sample: ${num_views}
+      color_type: unchanged
+
+    - _target_: dataset.transforms.RectifyStereoImages
+      gated_rect_loaded: false
+      rgb_rect_loaded: false
+      rccb_rect_loaded: false
+      alpha_gated: -1.0
+      alpha_rgb: -1.0
+      alpha_rccb: -1.0
+
+    - _target_: dataset.transforms.GatedStereoCropMultiViewImages
+      crops:
+        default: { from_top: 20, from_bottom: 20, from_left: 20, from_right: 20 }
+        gated_left: { from_top: 104, from_bottom: 104, from_left: 128, from_right: 128 }
+        gated_right: { from_top: 104, from_bottom: 104, from_left: 128, from_right: 128 }
+        rgb_left: { from_top: 330, from_bottom: 35, from_left: 300, from_right: 250 }
+        rgb_right: { from_top: 330, from_bottom: 35, from_left: 300, from_right: 250 }
+        rccb_left: { from_top: 388, from_bottom: 250, from_left: 20, from_right: 756 }
+        rccb_right: { from_top: 388, from_bottom: 250, from_left: 20, from_right: 756 }
+      update_camera_tree: true
+      also_crop_depth_fields: true
+
+    - _target_: dataset.transforms.GatedStereoScaleMultiViewImage
+      scales:
+        default: [ 512, 1024 ]
+        rccb: [1536, 3072]
+      rescale_depth: true
+      update_camera_tree: true
+
+    - _target_: dataset.transforms.GenerateSparseDepth
+      res_depth: 1.0
+      filter_occluded_points: false
+      sparse_ratio: 0.2
+
+    - _target_: dataset.transforms.CalculateCam2CamExtrinsics
+      store_key: extrinsics
+      dtype: float64
+      include_identity: true
+
+    - _target_: dataset.transforms.CalculateTimestampDifferences
+      store_key: timedifference
+
+
+    - _target_: dataset.transforms.LongRangeBEVPack3DDetInputs
+      keys:
+        - img_gated
+        - img_rgb
+        - img_rccb
+        - sparse_depth_gated
+        - sparse_depth_rgb
+        - sparse_depth_rccb
+        - gt_sparse_depth_gated
+        - gt_sparse_depth_rgb
+        - gt_sparse_depth_rccb
+        - sparse_depth_gated_hd
+        - sparse_depth_rgb_hd
+        - sparse_depth_rccb_hd
+        - gt_sparse_depth_gated_hd
+        - gt_sparse_depth_rgb_hd
+        - gt_sparse_depth_rccb_hd
+      meta_keys:
+        - dataset
+        - recording
+        - index
+        - name
+        - folder
+        - camera
+        - lidar
+        - view_names
+        - img_shape
+        - cam2img
+        - cam2lidar
+        - lidar2img
+        - rccb_baseline
+        - gated_baseline
+        - rgb_baseline
+        - gated_left_idx
+        - gated_right_idx
+        - rgb_left_idx
+        - rgb_right_idx
+        - rccb_left_idx
+        - rccb_right_idx
+        - occlusion_mask
+        - extrinsics
+        - timedifference
+        - augmentations
+

@@ -1,0 +1,7 @@
+lr: 3e-5
+weight_decay: 0.0
+
+# LR schedule params (all fractions of total epochs)
+warmup_frac: 0.000001      # first 2% of epochs = warmup
+const_frac: 0.6        # up to 60% of epochs = constant
+min_lr_rate: 0.05      # minimum LR is 5% of base LR
