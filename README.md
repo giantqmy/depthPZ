@@ -129,6 +129,19 @@ Outputs go to `rgb_nir_lidar_finetune_run`: per-epoch `loss.txt`, `history.json`
 disparity BerHu supervision. The existing `train_rgb_nir_lidar.py` remains the
 scratch-training entry point.
 
+Fine-tuning progress also prints `depth_mae_m` (metres) and `disp_mae_px`
+(pixels), computed from the final output at valid LiDAR supervision pixels.
+These are plain absolute errors, without BerHu or intermediate-iteration
+weights, and do not change the training objective. Per-epoch train/validation
+MAE columns are saved to `loss.txt`, `history.json` and checkpoint history.
+Epoch MAE is the total absolute error divided by the total valid pixel count;
+`NA` means no valid pixels. Training metrics use predictions from each training
+step, while validation metrics evaluate the fixed model after that epoch.
+Disparity targets are derived from LiDAR depth and calibration, not independent
+disparity annotations. Metrics reuse the model's supervision targets, including
+its existing depth clamp to 1--220 metres. Existing runs need a restart to enable these metrics;
+old loss logs cannot be used to reconstruct MAE.
+
 Test the fine-tuned checkpoint with rectified left RGB and right NIR images:
 
 ```powershell

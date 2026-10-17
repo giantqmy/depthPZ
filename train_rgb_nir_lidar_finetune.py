@@ -199,6 +199,40 @@ class BerHuSparseLoss(nn.Module):
         return total, details
 
 
+class FinalOutputMAE:
+    """Pixel-weighted MAE of final predictions on valid LiDAR targets only."""
+
+    def __init__(self):
+        self.sums = {"depth": 0.0, "disp": 0.0}
+        self.counts = {"depth": 0, "disp": 0}
+
+    @torch.no_grad()
+    def update(self, outputs):
+        sample = {}
+        for key in self.sums:
+            pred, gt = outputs[key].detach().float()[:, :1], outputs[f"gt_{key}"].detach().float()[:, :1]
+            if pred.shape != gt.shape:
+                raise ValueError(f"{key} prediction/target shape mismatch: {pred.shape}, {gt.shape}")
+            valid = outputs.get("gt_valid", gt > 0).bool()[:, :1]
+            valid = valid & torch.isfinite(gt) & (gt > 0)
+            count = int(valid.sum().item())
+            if not torch.isfinite(pred[valid]).all():
+                raise FloatingPointError(f"Non-finite final {key} prediction at valid LiDAR pixels")
+            error_sum = (pred[valid] - gt[valid]).abs().sum(dtype=torch.float64).item()
+            self.sums[key] += error_sum
+            self.counts[key] += count
+            sample[key] = error_sum / count if count else None
+        return sample
+
+    def summary(self):
+        return {key: self.sums[key] / self.counts[key] if self.counts[key] else None
+                for key in self.sums}
+
+
+def format_mae(value):
+    return f"{value:.4f}" if value is not None else "NA"
+
+
 def make_model(checkpoint, device):
     sys.path.insert(0, str(ROOT))
     from run_gatedrccbstereo_stereo import make_model as load_model
@@ -289,7 +323,8 @@ def main():
         log.write(f"\n# Run {datetime.now().astimezone().isoformat()} initialization=pretrained_full "
                   f"rgb_channels=3 nir_channels={nir_channels} checkpoint={args.checkpoint.resolve()} lr={args.lr} seed={args.seed} "
                   f"train_samples={len(train_set)} val_samples={len(val_set)}\n")
-        log.write("epoch\ttrain_loss\tval_loss\n")
+        log.write("# MAE: final output only, valid LiDAR pixels, epoch values weighted by pixel count\n")
+        log.write("epoch\ttrain_loss\tval_loss\ttrain_depth_mae_m\ttrain_disp_mae_px\tval_depth_mae_m\tval_disp_mae_px\n")
     print(f"Epoch loss log: {loss_log.resolve()}", flush=True)
     write_json(args.output / "calibration.json", {
         "image_size_wh": [640, 512], "fx_rectified": calib["fx"],
@@ -307,6 +342,7 @@ def main():
         model.train()
         model.apply(freeze_batchnorm_statistics)
         train_values = []
+        train_mae = FinalOutputMAE()
         total_train = len(train_loader)
         print(f"[epoch {epoch + 1}/{args.epochs}] train: {total_train} samples", flush=True)
         for step, sample in enumerate(train_loader, start=1):
@@ -317,6 +353,7 @@ def main():
             loss, details = criterion(outputs)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Non-finite loss at epoch {epoch}: {details}")
+            sample_mae = train_mae.update(outputs)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -329,12 +366,15 @@ def main():
                 print(
                     f"  train {step:>4}/{total_train}: "
                     f"loss={loss_value:.4f} avg={running:.4f} "
-                    f"depth={depth_value:.4f} disp={disp_value:.4f}",
+                    f"depth={depth_value:.4f} disp={disp_value:.4f} "
+                    f"depth_mae_m={format_mae(sample_mae['depth'])} "
+                    f"disp_mae_px={format_mae(sample_mae['disp'])}",
                     flush=True,
                 )
 
         model.eval()
         val_values = []
+        val_mae = FinalOutputMAE()
         total_val = len(val_loader)
         print(f"[epoch {epoch + 1}/{args.epochs}] val: {total_val} samples", flush=True)
         with torch.no_grad():
@@ -345,21 +385,33 @@ def main():
                 loss, _ = criterion(outputs)
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f"Non-finite validation loss at epoch {epoch + 1}, sample {step}")
+                sample_mae = val_mae.update(outputs)
                 loss_value = float(loss.detach().cpu())
                 val_values.append(loss_value)
                 if step == 1 or step % max(1, args.log_interval) == 0 or step == total_val:
                     print(
                         f"  val   {step:>4}/{total_val}: "
-                        f"loss={loss_value:.4f} avg={np.mean(val_values):.4f}",
+                        f"loss={loss_value:.4f} avg={np.mean(val_values):.4f} "
+                        f"depth_mae_m={format_mae(sample_mae['depth'])} "
+                        f"disp_mae_px={format_mae(sample_mae['disp'])}",
                         flush=True,
                     )
         row = {"epoch": epoch + 1, "train_loss": float(np.mean(train_values)),
                "val_loss": float(np.mean(val_values))}
+        for phase, metrics in (("train", train_mae), ("val", val_mae)):
+            summary = metrics.summary()
+            row[f"{phase}_depth_mae_m"] = summary["depth"]
+            row[f"{phase}_disp_mae_px"] = summary["disp"]
+            row[f"{phase}_depth_valid_pixels"] = metrics.counts["depth"]
+            row[f"{phase}_disp_valid_pixels"] = metrics.counts["disp"]
         history.append(row)
         # Persist completed epochs before checkpoint serialization, so an
         # interruption in a later epoch does not discard previous loss records.
         with loss_log.open("a", encoding="utf-8") as log:
-            log.write(f"{row['epoch']}\t{row['train_loss']:.8f}\t{row['val_loss']:.8f}\n")
+            log.write(f"{row['epoch']}\t{row['train_loss']:.8f}\t{row['val_loss']:.8f}\t"
+                      + "\t".join(format_mae(row[key]) for key in (
+                          "train_depth_mae_m", "train_disp_mae_px",
+                          "val_depth_mae_m", "val_disp_mae_px")) + "\n")
         write_json(args.output / "history.json", {"history": history,
                    "initialization": "pretrained_full", "source_checkpoint": str(args.checkpoint.resolve()), "loaded_parameter_tensors": loaded,
                    "device": str(device), "csm": False, "secondary": False})
