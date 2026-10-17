@@ -288,8 +288,23 @@ class GatedRCCBStereo(nn.Module):
         if modality not in self.backbone or comp_mod not in self.backbone:
             raise KeyError(f"Missing encoder for modality='{modality}' or comp_mod='{comp_mod}' in self.backbone.")
 
-        fmapL_ref, fmapR_ref = self.backbone[modality]([left_inp, right_inp])
-        fmapL_comp, fmapR_comp = self.backbone[comp_mod]([left_inp_comp, right_inp_comp])
+        # Optional cross-encoder stereo smoke test: use the reference modality's
+        # encoder for the left view and the complementary modality's encoder for
+        # the right view.  This is useful for RGB-left/NIR-right transfer where
+        # neither native modality pair represents the requested input.  The
+        # complementary maps are aliases because CSM/secondary matching may be
+        # disabled and the primary matcher only consumes fmapL_ref/fmapR_ref.
+        if kwargs.get("hetero_encoders", False):
+            if modality not in self.backbone or comp_mod not in self.backbone:
+                raise KeyError(
+                    f"Heterogeneous encoders require '{modality}' and '{comp_mod}' in self.backbone."
+                )
+            fmapL_ref = self.backbone[modality]([left_inp])[0]
+            fmapR_ref = self.backbone[comp_mod]([right_inp_comp])[0]
+            fmapL_comp, fmapR_comp = fmapL_ref, fmapR_ref
+        else:
+            fmapL_ref, fmapR_ref = self.backbone[modality]([left_inp, right_inp])
+            fmapL_comp, fmapR_comp = self.backbone[comp_mod]([left_inp_comp, right_inp_comp])
 
         # infer resolution imbalance factor from ORIGINAL image sizes
         H_ref, W_ref = left_inp.shape[-2], left_inp.shape[-1]

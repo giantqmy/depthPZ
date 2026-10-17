@@ -76,3 +76,4 @@ ehthumbs.db
 .idea/
 *.iml
 out/
+rgb_nir_lidar_*/

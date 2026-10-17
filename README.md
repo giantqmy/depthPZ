@@ -100,3 +100,41 @@ year={2024}
 }
 ```
 
+
+
+## RGB-left / NIR-right pretrained fine-tuning
+
+Run from this repository with the existing `pytorch` environment:
+
+```powershell
+& D:\anaconda\envs\pytorch\python.exe -u train_rgb_nir_lidar_finetune.py --epochs 5 --limit 100 --log-interval 1
+```
+
+The default checkpoint is `gatedrccbstereo.pt`. Both image encoders (including
+their feature necks), stereo attention/update modules, disparity decoder and
+learned upsampling weights are loaded strictly and fine-tuned. No encoder is
+reset or frozen by default. The original checkpoint uses RGB with 3 channels
+and gated input with 5 channels, so the right NIR image is repeated into 5
+channels. A checkpoint with a single-channel NIR encoder is also supported.
+Same-side modality fusion remains disabled.
+
+Default data directories are `I:\KEDADATA\data\fog\RGBS0`, `NIRS0` and
+`depth_output_dense`; LiDAR PNG values are converted from millimetres to metres
+with `--depth-scale 0.001`. The seeded split uses 90% for training and 10% for
+validation (`--limit 100`: 90 training, 10 validation). Remove `--limit` to use
+all matched triplets. Batch size is one; learning rate defaults to `1e-5`.
+
+Outputs go to `rgb_nir_lidar_finetune_run`: per-epoch `loss.txt`, `history.json`,
+`calibration.json`, and `latest.pt`. The loss retains LiDAR-derived depth and
+disparity BerHu supervision. The existing `train_rgb_nir_lidar.py` remains the
+scratch-training entry point.
+
+Test the fine-tuned checkpoint with rectified left RGB and right NIR images:
+
+```powershell
+& D:\anaconda\envs\pytorch\python.exe run_gatedrccbstereo_stereo.py --checkpoint .\rgb_nir_lidar_finetune_run\latest.pt --left path/to/left_rectified.png --right path/to/right_rectified.png --output .\rgb_nir_lidar_finetune_test
+```
+
+# qmy
+
+python run_gatedrccbstereo_stereo.py --checkpoint ".\rgb_nir_lidar_scratch_run\latest.pt" --left "..\depth-视差图代码\data\10\cs_stereo_result\left_rectified.png" --right "..\depth-视差图代码\data\10\cs_stereo_result\right_rectified.png" --output "..\depth-视差图代码\data\10\gatedrccbstereo_latest1_50_result"
