@@ -2,7 +2,9 @@
 
 This experiment keeps the pretrained RCCB image encoder and shared stereo
 matching/update blocks, while disabling CSM and the secondary cross-modal pass.
-The input pair is the rectified RGB-left / NIR-right pair in data/10.
+Raw RGB-left/NIR-right images are undistorted and stereo-rectified by default
+with the calibration from depth-视差图代码/sgbmS0.py. Pass
+--skip-rectification only when the inputs are already rectified.
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ ROOT = Path(__file__).resolve().parent
 MODEL_ROOT = ROOT
 DATA_ROOT = ROOT.parent / "depth-视差图代码" / "data" / "10"
 RESULT_DIR = DATA_ROOT / "gatedrccbstereo_hetero_result"
-LEFT_DEFAULT = DATA_ROOT / "cs_stereo_result" / "left_rectified.png"
-RIGHT_DEFAULT = DATA_ROOT / "cs_stereo_result" / "right_rectified.png"
+LEFT_DEFAULT = DATA_ROOT / "2000-01-01-12-29-20_637.png"
+RIGHT_DEFAULT = DATA_ROOT / "2000-01-01-12-29-20_637_hsi_nir.png"
 CHECKPOINT_DEFAULT = MODEL_ROOT / "gatedrccbstereo.pt"
 
 
@@ -206,6 +208,67 @@ def read_image(path: Path) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
+def stereo_calibration(size):
+    """Build rectification maps from the calibration used by sgbmS0.py."""
+    width, height = size
+    if (width, height) != (640, 512):
+        raise ValueError(
+            f"Calibration is for 640x512 images, but inputs are {width}x{height}. "
+            "Resize/recalculate calibration for another resolution first."
+        )
+    k_left = np.array(
+        [[1265.5616099448073, 0.0, 492.5894472471048],
+         [0.0, 1265.0089455071945, 257.24307296897143],
+         [0.0, 0.0, 1.0]], dtype=np.float64)
+    k_right = np.array(
+        [[1277.6494552887766, 0.0, 474.185263116495],
+         [0.0, 1278.5279034618504, 260.09879728682546],
+         [0.0, 0.0, 1.0]], dtype=np.float64)
+    d_left = np.array([[-0.02096660215918474, 0.2409083928738356,
+                        -0.005298800804070935, 0.007648334809400866, 0.0]], dtype=np.float64)
+    d_right = np.array([[-0.06681173268876799, 0.39362342592776267,
+                         -0.007450119715294455, 0.0034144197720179475, 0.0]], dtype=np.float64)
+    rotation = np.array(
+        [[0.9998762017154619, 0.003542133347215963, 0.015330836063682721],
+         [-0.003479358861003513, 0.9999854622282568, -0.004119392437720074],
+         [-0.01534520462481131, 0.004065540983698188, 0.9998739900965185]], dtype=np.float64)
+    translation = np.array(
+        [-0.055078917279073276, 0.00011619425753116915,
+         0.0017826427597072247], dtype=np.float64)
+    r_left, r_right, p_left, p_right, q, roi_left, roi_right = cv2.stereoRectify(
+        k_left, d_left, k_right, d_right, (width, height), rotation, translation,
+        flags=cv2.CALIB_ZERO_DISPARITY, alpha=0.9,
+    )
+    map_left = cv2.initUndistortRectifyMap(
+        k_left, d_left, r_left, p_left, (width, height), cv2.CV_32FC1)
+    map_right = cv2.initUndistortRectifyMap(
+        k_right, d_right, r_right, p_right, (width, height), cv2.CV_32FC1)
+    return {
+        "map_left": map_left,
+        "map_right": map_right,
+        "P1": p_left,
+        "P2": p_right,
+        "Q": q,
+        "roi_left": roi_left,
+        "roi_right": roi_right,
+        "baseline_m": float(-p_right[0, 3] / p_right[0, 0]),
+    }
+
+
+def rectify_pair(left_rgb, right_rgb, calibration):
+    """Undistort and rectify RGB-left and NIR-right images."""
+    right_gray = cv2.cvtColor(right_rgb, cv2.COLOR_RGB2GRAY)
+    left_rectified = cv2.remap(
+        left_rgb, *calibration["map_left"], cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    right_rectified = cv2.remap(
+        right_gray, *calibration["map_right"], cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    return left_rectified, right_rectified
+
+
 def write_image(path: Path, image: np.ndarray) -> None:
     suffix = path.suffix or ".png"
     ok, encoded = cv2.imencode(suffix, image)
@@ -299,12 +362,31 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT_DEFAULT)
     parser.add_argument("--output", type=Path, default=RESULT_DIR)
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
+    parser.add_argument("--skip-rectification", action="store_true",
+                        help="Input pair is already rectified; skip calibration/remapping")
     args = parser.parse_args()
 
-    left = read_image(args.left)
-    right = read_image(args.right)
-    if left.shape != right.shape:
-        raise ValueError(f"Left/right sizes differ: {left.shape} vs {right.shape}; rectify/resize them first")
+    left_raw = read_image(args.left)
+    right_raw = read_image(args.right)
+    if left_raw.shape != right_raw.shape:
+        raise ValueError(f"Left/right sizes differ: {left_raw.shape} vs {right_raw.shape}")
+    if left_raw.shape[:2] != (512, 640):
+        raise ValueError(f"Expected 640x512 input images, got {left_raw.shape[:2]}")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    rectification = None
+    if args.skip_rectification:
+        left = left_raw
+        right = cv2.cvtColor(right_raw, cv2.COLOR_RGB2GRAY)
+        rectification_status = "skipped_input_declared_already_rectified"
+    else:
+        rectification = stereo_calibration((left_raw.shape[1], left_raw.shape[0]))
+        left, right = rectify_pair(left_raw, right_raw, rectification)
+        rectification_status = "applied_undistortion_and_stereo_rectification"
+
+    # Save the exact inputs consumed by the network for inspection/reuse.
+    write_image(args.output / "left_rectified.png", cv2.cvtColor(left, cv2.COLOR_RGB2BGR))
+    write_image(args.output / "right_rectified.png", right)
 
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
     model, loaded_count = make_model(args.checkpoint, device)
@@ -312,10 +394,9 @@ def main() -> None:
     print(f"Loaded checkpoint: {args.checkpoint.resolve()}", flush=True)
     print(f"RGB channels: 3; NIR channels: {nir_channels}; both encoders restored from checkpoint", flush=True)
 
-    # Use native grayscale for the new one-channel encoder. Only legacy
+    # ``right`` is already the rectified NIR grayscale image above. Only legacy
     # five-channel checkpoints need the replicated-luminance adapter.
-    nir_gray = cv2.cvtColor(right, cv2.COLOR_RGB2GRAY)
-    nir_input = nir_gray[..., None]
+    nir_input = right[..., None]
     if nir_channels == 5:
         nir_input = np.repeat(nir_input, 5, axis=2)
     left_pair = np.stack([left, left], axis=0).transpose(0, 3, 1, 2).copy()
@@ -343,7 +424,6 @@ def main() -> None:
     valid = np.isfinite(disparity) & (disparity > 0) & ((xx - disparity) >= 0)
     disparity_clean = np.where(np.isfinite(disparity), disparity, 0).astype(np.float32)
 
-    args.output.mkdir(parents=True, exist_ok=True)
     np.save(args.output / "disparity_pixels.npy", disparity_clean)
     write_image(args.output / "valid_mask.png", valid.astype(np.uint8) * 255)
 
@@ -374,7 +454,15 @@ def main() -> None:
         "encoders_loaded_from_checkpoint": True,
         "csm_enabled": False,
         "secondary_cross_modal_matching_enabled": False,
-        "rectification": "uses the existing cs_stereo_result rectified pair by default",
+        "rectification": rectification_status,
+        "raw_left": str(args.left.resolve()),
+        "raw_right": str(args.right.resolve()),
+        "rectified_outputs": {
+            "left": str((args.output / "left_rectified.png").resolve()),
+            "right": str((args.output / "right_rectified.png").resolve()),
+        },
+        "calibration_image_size_wh": [640, 512],
+        "calibration_baseline_m": (rectification["baseline_m"] if rectification is not None else None),
         "input_size_wh": [width, height],
         "disparity_units": "pixels at input resolution",
         "disparity_convention": "left_x - right_x; positive values retained in valid mask",
@@ -384,6 +472,7 @@ def main() -> None:
         "input_adapter": ("NIR converted to single-channel grayscale" if nir_channels == 1
                           else "NIR grayscale replicated to 5 channels"),
         "transfer_note": "All inference parameters restored from the supplied checkpoint; accuracy requires ground-truth evaluation.",
+        "rectification_note": "Calibration matches sgbmS0.py. Use --skip-rectification only for already rectified inputs.",
     }
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 

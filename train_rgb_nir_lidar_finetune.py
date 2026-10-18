@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent
 MODEL_ROOT = ROOT
 DEFAULT_RGB = Path(r"I:\KEDADATA\data\fog\RGBS0")
 DEFAULT_NIR = Path(r"I:\KEDADATA\data\fog\NIRS0")
-DEFAULT_DEPTH = Path(r"I:\KEDADATA\data\fog\depth_output_dense")
+DEFAULT_DEPTH = Path(r"I:\KEDADATA\data\fog\depth_new")
 
 
 def read_image(path: Path, flags=cv2.IMREAD_UNCHANGED) -> np.ndarray:
@@ -161,6 +161,24 @@ class RGBNIRLiDARDataset(Dataset):
                 "sample_key": key,
             },
         }
+
+
+def write_split_manifest(path, dataset, indices, split_name, seed, val_fraction, limit):
+    """Persist the exact timestamped RGB/NIR/depth triplets assigned to a split."""
+    with Path(path).open("w", encoding="utf-8", newline="\n") as manifest:
+        manifest.write(
+            f"# split={split_name} seed={seed} val_fraction={val_fraction} "
+            f"limit={limit if limit is not None else 'all'} samples={len(indices)}\n"
+        )
+        manifest.write("# columns: timestamp_prefix\trgb_path\tnir_path\tdepth_path\n")
+        for index in indices:
+            rgb_path, nir_path, depth_path, key = dataset.samples[index]
+            manifest.write("\t".join((
+                key,
+                str(rgb_path.resolve()),
+                str(nir_path.resolve()),
+                str(depth_path.resolve()),
+            )) + "\n")
 
 
 class BerHuSparseLoss(nn.Module):
@@ -301,6 +319,15 @@ def main():
     val_idx, train_idx = indices[:n_val], indices[n_val:]
     train_set = torch.utils.data.Subset(dataset, train_idx)
     val_set = torch.utils.data.Subset(dataset, val_idx)
+    args.output.mkdir(parents=True, exist_ok=True)
+    train_manifest = args.output / "train.txt"
+    val_manifest = args.output / "val.txt"
+    write_split_manifest(train_manifest, dataset, train_idx, "train", args.seed,
+                         args.val_fraction, args.limit)
+    write_split_manifest(val_manifest, dataset, val_idx, "val", args.seed,
+                         args.val_fraction, args.limit)
+    print(f"Saved fixed split manifests: train={train_manifest.resolve()} ({len(train_idx)}), "
+          f"val={val_manifest.resolve()} ({len(val_idx)}); seed={args.seed}", flush=True)
     train_loader = DataLoader(train_set, batch_size=None, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_set, batch_size=None, shuffle=False, num_workers=0)
 
@@ -317,7 +344,6 @@ def main():
     )
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr)
     criterion = BerHuSparseLoss().to(device)
-    args.output.mkdir(parents=True, exist_ok=True)
     loss_log = args.output / "loss.txt"
     with loss_log.open("a", encoding="utf-8") as log:
         log.write(f"\n# Run {datetime.now().astimezone().isoformat()} initialization=pretrained_full "

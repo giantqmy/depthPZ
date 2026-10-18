@@ -1,0 +1,47 @@
+{
+  "left": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\depth-\u89c6\u5dee\u56fe\u4ee3\u7801\\data\\10\\2000-01-01-12-29-20_637.png",
+  "right": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\depth-\u89c6\u5dee\u56fe\u4ee3\u7801\\data\\10\\2000-01-01-12-29-20_637_hsi_nir.png",
+  "checkpoint": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\rgb_nir_lidar_finetune_depth_new\\latest.pt",
+  "device": "cpu",
+  "loaded_parameter_tensors": 2724,
+  "model_stream": "RGB-left and NIR-right through their checkpoint-restored encoders",
+  "input_channels": {
+    "rgb": 3,
+    "nir": 5
+  },
+  "encoders_loaded_from_checkpoint": true,
+  "csm_enabled": false,
+  "secondary_cross_modal_matching_enabled": false,
+  "rectification": "applied_undistortion_and_stereo_rectification",
+  "raw_left": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\depth-\u89c6\u5dee\u56fe\u4ee3\u7801\\data\\10\\2000-01-01-12-29-20_637.png",
+  "raw_right": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\depth-\u89c6\u5dee\u56fe\u4ee3\u7801\\data\\10\\2000-01-01-12-29-20_637_hsi_nir.png",
+  "rectified_outputs": {
+    "left": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\rectified_inference_smoke\\left_rectified.png",
+    "right": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\rectified_inference_smoke\\right_rectified.png"
+  },
+  "calibration_image_size_wh": [
+    640,
+    512
+  ],
+  "calibration_baseline_m": 0.055107880062194525,
+  "input_size_wh": [
+    640,
+    512
+  ],
+  "disparity_units": "pixels at input resolution",
+  "disparity_convention": "left_x - right_x; positive values retained in valid mask",
+  "valid_fraction": 0.952215576171875,
+  "valid_disparity_percentiles_0_25_50_75_95_98_100": [
+    0.04065054655075073,
+    5.748277187347412,
+    13.646507263183594,
+    32.41861915588379,
+    42.8655143737793,
+    44.13767288208008,
+    62.63584518432617
+  ],
+  "visualization_scale_pixels_p98": 44.137672424316406,
+  "input_adapter": "NIR grayscale replicated to 5 channels",
+  "transfer_note": "All inference parameters restored from the supplied checkpoint; accuracy requires ground-truth evaluation.",
+  "rectification_note": "Calibration matches sgbmS0.py. Use --skip-rectification only for already rectified inputs."
+}

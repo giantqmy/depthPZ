@@ -2,11 +2,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from networks.backbone.image_backbone import MPViTEncoder
 from networks.rum.corr import AGCL
 from networks.rum.update import UpdateBlock
 from networks.csm.csm import CSM
+from networks.dolp_fusion import DOLPFeatureFusion
 from networks.utils.utils import make_sparse_gt_targets_from_depth, disp_to_depth
 from networks.rum.attention import PositionEncodingSine, LocalFeatureTransformer
 
@@ -48,6 +50,8 @@ class GatedRCCBStereo(nn.Module):
                 out_channels=model_args.out_channels,  # expect 256
             )
 
+        self.use_dolp_fusion = False
+
         hidden_dim = _get(model_args, "hidden_dim")
         cor_planes = _get(model_args, "rum_cor_planes", None)
         mask_size = _get(model_args, "rum_mask_size", 4)
@@ -77,6 +81,29 @@ class GatedRCCBStereo(nn.Module):
         self.cross_att_fn = LocalFeatureTransformer(
             d_model=d_model, nhead=8, layer_names=["cross"] * 1, attention="linear"
         )
+
+    def enable_dolp_fusion(self, rgb_channels=3, nir_channels=1):
+        """Add independent RGB-DoLP/NIR-DoLP encoders and side-specific fusers."""
+        if self.use_dolp_fusion:
+            raise RuntimeError("DoLP encoders and fusion blocks are already enabled.")
+
+        encoder_lightweight = bool(getattr(self.args, "encoder_lightweight", False))
+        feature_channels = int(getattr(self.args, "out_channels", 256))
+        fusion_channels = int(getattr(self.args, "hidden_dim", 128))
+        self.dolp_backbone = nn.ModuleDict({
+            "rccb": MPViTEncoder(
+                num_image_channels=int(rgb_channels), lightweight=encoder_lightweight,
+                lidar_input=False, out_channels=feature_channels,
+            ),
+            "gated": MPViTEncoder(
+                num_image_channels=int(nir_channels), lightweight=encoder_lightweight,
+                lidar_input=False, out_channels=feature_channels,
+            ),
+        })
+        self.dolp_fusion_left = DOLPFeatureFusion(feature_channels, fusion_channels)
+        self.dolp_fusion_right = DOLPFeatureFusion(feature_channels, fusion_channels)
+        self.use_dolp_fusion = True
+        return self
 
     @staticmethod
     def _infer_integer_factor(h_ref, w_ref, h_comp, w_comp, tol=0.05):
@@ -211,6 +238,28 @@ class GatedRCCBStereo(nn.Module):
             left_inp, right_inp = left_raw_ref, right_raw_ref
             left_inp_comp, right_inp_comp = left_raw_comp, right_raw_comp
 
+        use_dolp_fusion = bool(kwargs.get("dolp_fusion", False))
+        if use_dolp_fusion:
+            if not self.use_dolp_fusion:
+                raise RuntimeError("DoLP fusion was requested, but the model has no DoLP branches.")
+            if not kwargs.get("hetero_encoders", False):
+                raise ValueError("DoLP fusion currently requires heterogeneous left/right encoders.")
+            if any(key not in inputs[0] for key in ("img_ref_dolp", "img_comp_dolp")):
+                raise KeyError("DoLP fusion expects img_ref_dolp and img_comp_dolp in each input dict.")
+            imgs_ref_dolp = torch.stack(
+                [inputs[b]["img_ref_dolp"] for b in range(B)], dim=0
+            ).to(device=device, dtype=torch.float32)
+            imgs_comp_dolp = torch.stack(
+                [inputs[b]["img_comp_dolp"] for b in range(B)], dim=0
+            ).to(device=device, dtype=torch.float32)
+            imgs_ref_dolp = 2.0 * (imgs_ref_dolp / 255.0) - 1.0
+            imgs_comp_dolp = 2.0 * (imgs_comp_dolp / 255.0) - 1.0
+            left_dolp = imgs_ref_dolp[:, l_ref_left].contiguous()
+            right_dolp = imgs_comp_dolp[:, l_comp_right].contiguous()
+            if do_right_trick:
+                left_dolp = torch.flip(imgs_ref_dolp[:, l_ref_right], dims=[-1]).contiguous()
+                right_dolp = torch.flip(imgs_comp_dolp[:, l_comp_left], dims=[-1]).contiguous()
+
         # ---------------------------------------------------------------------
         # Intrinsics / baseline / depth bounds
         # ---------------------------------------------------------------------
@@ -299,8 +348,27 @@ class GatedRCCBStereo(nn.Module):
                 raise KeyError(
                     f"Heterogeneous encoders require '{modality}' and '{comp_mod}' in self.backbone."
                 )
-            fmapL_ref = self.backbone[modality]([left_inp])[0]
-            fmapR_ref = self.backbone[comp_mod]([right_inp_comp])[0]
+            def encode(encoder, image):
+                if kwargs.get("checkpoint_encoders", False) and self.training and torch.is_grad_enabled():
+                    # Non-reentrant checkpointing also supports frozen encoders
+                    # and inputs without requires_grad. RNG state is preserved
+                    # for dropout/DropPath during recomputation.
+                    return checkpoint(encoder, image, use_reentrant=False)
+                return encoder(image)
+
+            fmapL_ref = encode(self.backbone[modality], left_inp)
+            fmapR_ref = encode(self.backbone[comp_mod], right_inp_comp)
+            if use_dolp_fusion:
+                fmapL_dolp = encode(self.dolp_backbone["rccb"], left_dolp)
+                fmapR_dolp = encode(self.dolp_backbone["gated"], right_dolp)
+                if fmapL_ref.shape != fmapL_dolp.shape or fmapR_ref.shape != fmapR_dolp.shape:
+                    raise ValueError(
+                        "RGB/NIR and corresponding DoLP feature maps must have identical shapes; "
+                        f"got left {tuple(fmapL_ref.shape)} vs {tuple(fmapL_dolp.shape)}, "
+                        f"right {tuple(fmapR_ref.shape)} vs {tuple(fmapR_dolp.shape)}."
+                    )
+                fmapL_ref = self.dolp_fusion_left(fmapL_ref, fmapL_dolp)
+                fmapR_ref = self.dolp_fusion_right(fmapR_ref, fmapR_dolp)
             fmapL_comp, fmapR_comp = fmapL_ref, fmapR_ref
         else:
             fmapL_ref, fmapR_ref = self.backbone[modality]([left_inp, right_inp])
