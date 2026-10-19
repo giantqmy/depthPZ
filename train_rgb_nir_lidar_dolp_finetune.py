@@ -1,8 +1,9 @@
-"""Fine-tune RGB-left/NIR-right stereo with independent DoLP encoders and iAFF.
+"""Train RGB-left/NIR-right stereo with independent DoLP encoders and iAFF.
 
 Run with the same seed, limit, validation fraction and image checkpoint as the
 baseline trainer. DoLP PNGs must be raw-camera, uint8 images: RGB DoLP has three
-channels and NIR DoLP has one. AoLP is not used.
+channels and NIR DoLP has one. AoLP is not used. Use --from-scratch to initialize
+all branches without loading checkpoints.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from train_rgb_nir_lidar_finetune import (
     move_sample, freeze_batchnorm_statistics, format_mae,
     make_model as make_baseline_model,
 )
+from train_rgb_nir_lidar import make_model as make_scratch_model
 
 DEFAULT_RGB_DOLP = Path(r"I:\KEDADATA\data\fog\RGB_color_polar_processed\RGBDOLP_color")
 DEFAULT_NIR_DOLP = Path(r"I:\KEDADATA\data\fog\NIRuseI4\output_dolp")
@@ -83,12 +85,22 @@ def write_split_manifest(path, dataset, indices, split_name, seed, val_fraction,
             manifest.write("\t".join([key, *(str(p.resolve()) for p in paths)]) + "\n")
 
 
-def make_model(checkpoint, device, fusion_checkpoint=ROOT / "gatedrccbstereo.pt"):
+def make_model(checkpoint, device, fusion_checkpoint=ROOT / "gatedrccbstereo.pt", *,
+               from_scratch=False, fusion_type="iaff"):
+    if fusion_type not in ("iaff", "pim"):
+        raise ValueError(f"Unknown fusion type: {fusion_type}")
+    if from_scratch:
+        model, loaded = make_scratch_model(torch.device("cpu"))
+        # Keep each encoder/fuser's own initialization; never copy/load weights.
+        model.enable_dolp_fusion(rgb_channels=3, nir_channels=1, fusion_type=fusion_type)
+        model.to(device).train()
+        return model, loaded
+
     # Build the baseline first, consuming exactly its normal initialization RNG.
     model, loaded = make_baseline_model(checkpoint, torch.device("cpu"))
     # Additional parameter initialization must not advance the baseline RNG stream.
     with torch.random.fork_rng(devices=[]):
-        model.enable_dolp_fusion(rgb_channels=3, nir_channels=1)
+        model.enable_dolp_fusion(rgb_channels=3, nir_channels=1, fusion_type=fusion_type)
     for modality in ("rccb", "gated"):
         state = model.backbone[modality].state_dict()
         if modality == "gated":
@@ -96,6 +108,12 @@ def make_model(checkpoint, device, fusion_checkpoint=ROOT / "gatedrccbstereo.pt"
             # Sum preserves the original stem response to repeated gray input.
             state[stem] = state[stem].sum(dim=1, keepdim=True)
         model.dolp_backbone[modality].load_state_dict(state, strict=True)
+
+    if fusion_type == "pim":
+        # The source stereo checkpoint has no PIM weights. Keep both PIMs'
+        # independent initialization and never try to load csm.fusion iAFF.
+        model.to(device).train()
+        return model, loaded
 
     checkpoint_data = torch.load(str(fusion_checkpoint), map_location="cpu", weights_only=True)
     state = checkpoint_data.get("model", checkpoint_data)
@@ -112,18 +130,37 @@ def make_model(checkpoint, device, fusion_checkpoint=ROOT / "gatedrccbstereo.pt"
     return model, loaded
 
 
-def main(*, auxiliary_input="dolp", dataset_class=None):
+def set_training_mode(model):
+    """Freeze encoder/PSP BN, but learn statistics in newly initialized PIMs.
+
+    PIM has spatial BN only, with no 1x1 global pooling branch. Its activations
+    are not checkpointed, so statistics update once per training forward.
+    """
+    model.train()
+    model.apply(freeze_batchnorm_statistics)
+    if getattr(model, "dolp_fusion_type", "iaff") == "pim":
+        model.dolp_fusion_left.train()
+        model.dolp_fusion_right.train()
+
+
+def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
     """Shared training loop; the intensity entry point supplies its own dataset."""
     if auxiliary_input not in ("dolp", "intensity"):
         raise ValueError(f"Unknown auxiliary input: {auxiliary_input}")
+    if fusion_type not in ("iaff", "pim"):
+        raise ValueError(f"Unknown fusion type: {fusion_type}")
+    use_pim = fusion_type == "pim"
     use_dolp_data = auxiliary_input == "dolp"
     if not use_dolp_data and dataset_class is None:
         raise ValueError("The intensity entry point must supply its dataset class.")
-    initialization = f"pretrained_full_{auxiliary_input}_residual_iaff"
     description = (__doc__ if use_dolp_data else
                    "Intensity control: four independent encoders and two iAFF fusers; "
                    "auxiliary inputs are RGB S0 (3 channels) and NIR S0 (1 channel). "
                    "No DoLP/AoLP images are read.")
+    if use_pim:
+        description = ("Train RGB-left/NIR-right stereo with four independent encoders "
+                       "and independent left/right wavelet PIM intensity/DoLP fusion. "
+                       "Supports pretrained encoders/stereo or --from-scratch.")
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--rgb-dir", type=Path, default=DEFAULT_RGB)
     parser.add_argument("--nir-dir", type=Path, default=DEFAULT_NIR)
@@ -131,14 +168,21 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
     if use_dolp_data:
         parser.add_argument("--rgb-dolp-dir", type=Path, default=DEFAULT_RGB_DOLP)
         parser.add_argument("--nir-dolp-dir", type=Path, default=DEFAULT_NIR_DOLP)
-    parser.add_argument("--fusion-checkpoint", type=Path, default=ROOT / "gatedrccbstereo.pt",
-                        help="Original checkpoint containing csm.fusion iAFF weights")
+    if not use_pim:
+        parser.add_argument("--fusion-checkpoint", type=Path, default=ROOT / "gatedrccbstereo.pt",
+                            help="Original checkpoint containing csm.fusion iAFF weights; ignored with --from-scratch")
     parser.add_argument("--check-data-only", action="store_true",
                         help="Save split manifests and check one full sample; do not build/train model")
     parser.add_argument("--checkpoint", type=Path, default=ROOT / "gatedrccbstereo.pt",
-                        help="Fully load both encoders and stereo/decoder weights; optimizer starts fresh")
-    parser.add_argument("--output", type=Path,
-                        default=ROOT / f"rgb_nir_lidar_{auxiliary_input}_finetune_depth_new")
+                        help="Fully load both encoders and stereo/decoder weights; optimizer starts fresh; "
+                             "ignored with --from-scratch")
+    parser.add_argument("--from-scratch", action="store_true",
+                        help=f"Initialize all four encoders, {fusion_type.upper()} fusers and stereo/decoder without "
+                             "loading checkpoints; primary NIR uses 1 channel")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Output directory; defaults to rgb_nir_lidar_<auxiliary>_"
+                             + ("pim_" if use_pim else "") +
+                             "{finetune,scratch}_depth_new according to initialization")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--depth-scale", type=float, default=0.001,
@@ -154,10 +198,25 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
     parser.add_argument("--freeze-encoders", action="store_true")
     parser.add_argument("--checkpoint-encoders", action="store_true",
                         help="Recompute encoder activations in backward to reduce GPU memory; "
-                             "preserves RNG state and uses frozen BatchNorm statistics")
+                             "preserves RNG state and uses frozen encoder BatchNorm statistics")
     args = parser.parse_args()
     if args.epochs < 1 or args.lr <= 0 or not 0 < args.val_fraction < 1:
         parser.error("Require epochs >= 1, lr > 0 and 0 < val-fraction < 1.")
+    if args.from_scratch and args.freeze_encoders:
+        parser.error("Training from scratch requires trainable encoders; omit --freeze-encoders.")
+    if args.output is None:
+        mode = "scratch" if args.from_scratch else "finetune"
+        variant = "pim_" if use_pim else ""
+        args.output = ROOT / f"rgb_nir_lidar_{auxiliary_input}_{variant}{mode}_depth_new"
+    if use_pim:
+        initialization = (f"random_all_{auxiliary_input}_wavelet_pim" if args.from_scratch else
+                          f"pretrained_encoders_stereo_{auxiliary_input}_random_wavelet_pim")
+    else:
+        initialization = (f"random_all_{auxiliary_input}_residual_iaff" if args.from_scratch else
+                          f"pretrained_full_{auxiliary_input}_residual_iaff")
+    source_checkpoint = None if args.from_scratch else str(args.checkpoint.resolve())
+    fusion_checkpoint = (None if args.from_scratch or use_pim else
+                         str(args.fusion_checkpoint.resolve()))
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -171,6 +230,8 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
     else:
         dataset = dataset_class(args.rgb_dir, args.nir_dir, args.depth_dir, calib,
                                 args.depth_scale, args.max_depth)
+    if args.from_scratch:
+        dataset.nir_channels = 1
     indices = list(range(len(dataset)))
     random.Random(args.seed).shuffle(indices)
     if args.limit is not None:
@@ -200,16 +261,21 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
     train_loader = DataLoader(train_set, batch_size=None, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_set, batch_size=None, shuffle=False, num_workers=0)
 
-    model, loaded = make_model(args.checkpoint, device, args.fusion_checkpoint)
+    model, loaded = make_model(args.checkpoint, device, fusion_checkpoint,
+                               from_scratch=args.from_scratch, fusion_type=fusion_type)
     nir_channels = model.backbone["gated"].in_channels
     dataset.nir_channels = nir_channels
     if args.freeze_encoders:
         for encoders in (model.backbone, model.dolp_backbone):
             for parameter in encoders.parameters():
                 parameter.requires_grad_(False)
+    initialization_message = ("Entire model initialized from scratch" if args.from_scratch else
+                              f"Full checkpoint loaded: {source_checkpoint}")
+    fusion_message = ("independent wavelet PIM=256/256, new PIM weights" if use_pim else
+                      "independent iAFF=128/128")
     print(
-        f"Full checkpoint loaded: {args.checkpoint.resolve()}; RGB=3, NIR={nir_channels}; "
-        f"auxiliary={auxiliary_input} (3/1), independent iAFF=128/128; loaded baseline tensors: {loaded}; "
+        f"{initialization_message}; RGB=3, NIR={nir_channels}; "
+        f"auxiliary={auxiliary_input} (3/1), {fusion_message}; loaded baseline tensors: {loaded}; "
         f"encoders frozen: {args.freeze_encoders}",
         flush=True,
     )
@@ -217,14 +283,18 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
         "seed": args.seed, "limit": args.limit, "val_fraction": args.val_fraction,
         "lr": args.lr, "epochs": args.epochs, "freeze_encoders": args.freeze_encoders,
         "checkpoint_encoders": args.checkpoint_encoders,
-        "architecture": "rgb_nir_dolp_4encoders_residual_iaff128_v1",
+        "from_scratch": args.from_scratch, "initialization": initialization,
+        "architecture": ("rgb_nir_dolp_4encoders_wavelet_pim256_v1" if use_pim else
+                         "rgb_nir_dolp_4encoders_residual_iaff128_v1"),
+        "fusion_type": fusion_type,
+        "batchnorm_statistics": "frozen_base_train_pim" if use_pim else "frozen_all",
         "model_args": vars(model.args),
         "dolp_fusion": True, "aolp": False, "shared_encoder_weights": False,
         "auxiliary_input": auxiliary_input, "uses_dolp_data": use_dolp_data,
         "input_channels": {"rccb": 3, "gated": nir_channels,
                            f"rgb_{auxiliary_input}": 3, f"nir_{auxiliary_input}": 1},
-        "fusion_checkpoint": str(args.fusion_checkpoint.resolve()),
-        "source_checkpoint": str(args.checkpoint.resolve()),
+        "fusion_checkpoint": fusion_checkpoint,
+        "source_checkpoint": source_checkpoint,
         "data_dirs": {key: str(getattr(args, key).resolve()) for key in
                       (("rgb_dir", "nir_dir", "depth_dir", "rgb_dolp_dir", "nir_dolp_dir")
                        if use_dolp_data else ("rgb_dir", "nir_dir", "depth_dir"))},
@@ -237,10 +307,10 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
     loss_log = args.output / "loss.txt"
     with loss_log.open("a", encoding="utf-8") as log:
         log.write(f"\n# Run {datetime.now().astimezone().isoformat()} initialization={initialization} "
-                  f"rgb_channels=3 nir_channels={nir_channels} checkpoint={args.checkpoint.resolve()} lr={args.lr} seed={args.seed} "
+                  f"rgb_channels=3 nir_channels={nir_channels} checkpoint={source_checkpoint} lr={args.lr} seed={args.seed} "
                   f"train_samples={len(train_set)} val_samples={len(val_set)} "
                   f"auxiliary_input={auxiliary_input} auxiliary_channels=3/1 "
-                  f"fusion_checkpoint={args.fusion_checkpoint.resolve()}\n")
+                  f"fusion_checkpoint={fusion_checkpoint}\n")
         log.write("# MAE: final output only, valid LiDAR pixels, epoch values weighted by pixel count\n")
         log.write("epoch\ttrain_loss\tval_loss\ttrain_depth_mae_m\ttrain_disp_mae_px\tval_depth_mae_m\tval_disp_mae_px\n")
     print(f"Epoch loss log: {loss_log.resolve()}", flush=True)
@@ -252,13 +322,12 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
         "rgb_nir_pairs": len(dataset),
         "input_channels": {"rccb": 3, "gated": nir_channels},
         "initialization": initialization, "run_config": run_config,
-        "checkpoint": str(args.checkpoint.resolve()),
+        "checkpoint": source_checkpoint,
     })
 
     history = []
     for epoch in range(args.epochs):
-        model.train()
-        model.apply(freeze_batchnorm_statistics)
+        set_training_mode(model)
         train_values = []
         train_mae = FinalOutputMAE()
         total_train = len(train_loader)
@@ -271,10 +340,17 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
                             checkpoint_encoders=args.checkpoint_encoders)
             loss, details = criterion(outputs)
             if not torch.isfinite(loss):
-                raise FloatingPointError(f"Non-finite loss at epoch {epoch}: {details}")
+                raise FloatingPointError(
+                    f"Non-finite loss at epoch {epoch + 1}, step {step}, "
+                    f"sample {sample['meta'].get('sample_key')}: {details}")
             sample_mae = train_mae.update(outputs)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            try:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Gradient clipping failed at epoch {epoch + 1}, step {step}, "
+                    f"sample {sample['meta'].get('sample_key')}; optimizer was not stepped") from exc
             optimizer.step()
             loss_value = float(loss.detach().cpu())
             train_values.append(loss_value)
@@ -333,11 +409,11 @@ def main(*, auxiliary_input="dolp", dataset_class=None):
                           "train_depth_mae_m", "train_disp_mae_px",
                           "val_depth_mae_m", "val_disp_mae_px")) + "\n")
         write_json(args.output / "history.json", {"history": history,
-                   "initialization": initialization, "run_config": run_config, "source_checkpoint": str(args.checkpoint.resolve()), "loaded_parameter_tensors": loaded,
+                   "initialization": initialization, "run_config": run_config, "source_checkpoint": source_checkpoint, "loaded_parameter_tensors": loaded,
                    "device": str(device), "csm": False, "secondary": False})
         torch.save({"model": model.state_dict(), "epoch": epoch + 1,
                     "optimizer": optimizer.state_dict(), "history": history,
-                    "initialization": initialization, "run_config": run_config, "source_checkpoint": str(args.checkpoint.resolve()),
+                    "initialization": initialization, "run_config": run_config, "source_checkpoint": source_checkpoint,
                     "input_channels": {"rccb": 3, "gated": nir_channels}},
                    args.output / "latest.pt")
         print(row, flush=True)

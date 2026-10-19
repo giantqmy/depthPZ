@@ -9,6 +9,7 @@ from networks.rum.corr import AGCL
 from networks.rum.update import UpdateBlock
 from networks.csm.csm import CSM
 from networks.dolp_fusion import DOLPFeatureFusion
+from networks.pim_fusion import DOLPPIMFeatureFusion
 from networks.utils.utils import make_sparse_gt_targets_from_depth, disp_to_depth
 from networks.rum.attention import PositionEncodingSine, LocalFeatureTransformer
 
@@ -82,10 +83,12 @@ class GatedRCCBStereo(nn.Module):
             d_model=d_model, nhead=8, layer_names=["cross"] * 1, attention="linear"
         )
 
-    def enable_dolp_fusion(self, rgb_channels=3, nir_channels=1):
+    def enable_dolp_fusion(self, rgb_channels=3, nir_channels=1, fusion_type="iaff"):
         """Add independent RGB-DoLP/NIR-DoLP encoders and side-specific fusers."""
         if self.use_dolp_fusion:
             raise RuntimeError("DoLP encoders and fusion blocks are already enabled.")
+        if fusion_type not in ("iaff", "pim"):
+            raise ValueError(f"Unknown DoLP fusion type: {fusion_type}")
 
         encoder_lightweight = bool(getattr(self.args, "encoder_lightweight", False))
         feature_channels = int(getattr(self.args, "out_channels", 256))
@@ -100,8 +103,13 @@ class GatedRCCBStereo(nn.Module):
                 lidar_input=False, out_channels=feature_channels,
             ),
         })
-        self.dolp_fusion_left = DOLPFeatureFusion(feature_channels, fusion_channels)
-        self.dolp_fusion_right = DOLPFeatureFusion(feature_channels, fusion_channels)
+        if fusion_type == "pim":
+            self.dolp_fusion_left = DOLPPIMFeatureFusion(feature_channels)
+            self.dolp_fusion_right = DOLPPIMFeatureFusion(feature_channels)
+        else:
+            self.dolp_fusion_left = DOLPFeatureFusion(feature_channels, fusion_channels)
+            self.dolp_fusion_right = DOLPFeatureFusion(feature_channels, fusion_channels)
+        self.dolp_fusion_type = fusion_type
         self.use_dolp_fusion = True
         return self
 
