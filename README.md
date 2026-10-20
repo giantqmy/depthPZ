@@ -172,6 +172,22 @@ training. Fusion checkpoint reconstruction requires the new model branches
 (`enable_dolp_fusion`) and `dolp_fusion=True`; the existing two-image inference
 entry point does not evaluate DoLP fusion checkpoints.
 
+To continue an interrupted trainer run, pass its `latest.pt`. The checkpoint
+restores model weights, AdamW state, completed epoch count and history. Here
+`--epochs` means the target total number of epochs, so a checkpoint saved after
+epoch 6 with `--epochs 20` continues at epoch 7 and stops after epoch 20:
+
+```powershell
+& D:\anaconda\envs\pytorch\python.exe -u train_rgb_nir_lidar_dolp_finetune.py `
+  --resume .\rgb_nir_lidar_dolp_finetune_depth_new\latest.pt `
+  --epochs 20 --seed 17 --checkpoint-encoders
+```
+
+For a scratch checkpoint, include `--from-scratch`; for a PIM checkpoint use
+`train_rgb_nir_lidar_dolp_pim_finetune.py` with the same `--resume` path.
+Resume requires the same data split, architecture, fusion type and NIR channel
+configuration. Do not use `--resume` with the baseline `gatedrccbstereo.pt`.
+
 ### Four-encoder wavelet PIM fusion
 
 `train_rgb_nir_lidar_dolp_pim_finetune.py` uses the same data pairing,
@@ -222,7 +238,8 @@ and `rgb_nir_lidar_dolp_pim_scratch_depth_new`. Metadata identifies
 `latest.pt` includes all four encoders, both PIMs, optimizer and history.
 Reconstruct these checkpoints with `enable_dolp_fusion(fusion_type="pim")`
 and load the entire model state strictly; `--checkpoint` is baseline
-initialization, not full training resume. The two-image inference entry point
+initialization, while `--resume` restores a completed training run. The
+two-image inference entry point
 does not evaluate these four-input checkpoints. The shared loop rejects
 non-finite gradients before updating parameters and reports epoch/step/sample.
 
@@ -252,6 +269,22 @@ these names describe the branch slots, not the control experiment's input data.
 The original two-encoder training entry point is unchanged. Use
 `--check-data-only --limit 50 --seed 17 --output <check-directory>` to check the
 control data and manifests without training.
+
+### Four-encoder PIM intensity ablation
+
+To compare DoLP against intensity with PIM fusion, run this control with the
+same seed, sample limit, checkpoint and other settings as the DoLP PIM run:
+
+```powershell
+& D:\anaconda\envs\pytorch\python.exe -u train_rgb_nir_lidar_intensity_pim_finetune.py --epochs 20 --limit 50 --seed 17 --checkpoint-encoders --output rgb_nir_lidar_intensity_pim_finetune_depth_new
+```
+
+It reuses the primary RGB/NIR S0 images as the auxiliary 3/1-channel inputs,
+but keeps the independent left/right PIM modules and the shared PIM training
+loop. No DoLP files are read. Use matching options (especially `--seed`,
+`--limit`, checkpoint and learning rate) for the DoLP PIM and intensity runs;
+outputs and split manifests are kept in the separate
+`rgb_nir_lidar_intensity_pim_finetune_depth_new` directory.
 
 ### Baseline training
 
@@ -315,13 +348,13 @@ rectified with this same calibration.
 
 # qmy
 
-python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\left.jpg" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\right.jpg" --output "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\dolp_finetune"
+python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\left.jpg" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\right.jpg" --output "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\dolp_pim_finetune"
 
 python run_gatedrccbstereo_stereo.py --checkpoint ".\rgb_nir_lidar_finetune_run\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\gatedrccbstereo_latest1_50_result_depthold_校正"
 
 
 
-python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\dolpall_finetune"
+python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\dolpall_pim_finetune"
 
 python -u train_rgb_nir_lidar_finetune.py 
   --depth-dir "I:\KEDADATA\data\fog\depth_new" 
@@ -329,3 +362,19 @@ python -u train_rgb_nir_lidar_finetune.py
   --limit 50 
   --seed 17 
   --output rgb_nir_lidar_finetune_depth_new
+
+
+
+
+# PIM融合立体匹配
+python -u train_rgb_nir_lidar_dolp_pim_finetune.py --from-scratch --epochs 20 --seed 17 --checkpoint-encoders
+
+--from-scratch代表整个模型随机初始化；
+不加--from-scratch 基础模型和编码器使用预训练权重，只有 PIM 随机初始化
+
+# iaff融合 
+python -u train_rgb_nir_lidar_dolp_finetune.py 
+  --resume .\rgb_nir_lidar_dolp_finetune_depth_new\latest.pt 
+  --epochs 20 
+  --seed 17 
+  --checkpoint-encoders

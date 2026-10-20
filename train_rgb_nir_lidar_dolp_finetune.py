@@ -176,6 +176,9 @@ def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
     parser.add_argument("--checkpoint", type=Path, default=ROOT / "gatedrccbstereo.pt",
                         help="Fully load both encoders and stereo/decoder weights; optimizer starts fresh; "
                              "ignored with --from-scratch")
+    parser.add_argument("--resume", type=Path, default=None,
+                        help="Resume a trainer latest.pt, restoring model, optimizer, history and completed epochs; "
+                             "--epochs is the target total epoch count")
     parser.add_argument("--from-scratch", action="store_true",
                         help=f"Initialize all four encoders, {fusion_type.upper()} fusers and stereo/decoder without "
                              "loading checkpoints; primary NIR uses 1 channel")
@@ -200,6 +203,32 @@ def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
                         help="Recompute encoder activations in backward to reduce GPU memory; "
                              "preserves RNG state and uses frozen encoder BatchNorm statistics")
     args = parser.parse_args()
+    resume_data = None
+    if args.resume is not None:
+        if not args.resume.is_file():
+            parser.error(f"Resume checkpoint does not exist: {args.resume}")
+        try:
+            resume_data = torch.load(str(args.resume), map_location="cpu", weights_only=True)
+        except Exception as exc:
+            parser.error(f"Could not read resume checkpoint {args.resume}: {exc}")
+        resume_config = resume_data.get("run_config", {})
+        saved_from_scratch = resume_data.get("initialization", "").startswith("random_all_")
+        if saved_from_scratch != args.from_scratch:
+            parser.error("--resume must use the same initialization mode as the saved run; "
+                         "add --from-scratch when resuming a scratch run")
+        saved_fusion_type = resume_config.get("fusion_type", resume_data.get("fusion_type", fusion_type))
+        if saved_fusion_type != fusion_type:
+            parser.error(f"Resume checkpoint uses fusion_type={saved_fusion_type!r}, "
+                         f"but this trainer uses {fusion_type!r}")
+        completed_epochs = int(resume_data.get("epoch", 0))
+        if completed_epochs < 0:
+            parser.error("Resume checkpoint has an invalid completed epoch count")
+        if args.epochs <= completed_epochs:
+            parser.error(f"--epochs must be greater than completed epoch {completed_epochs}; "
+                         "it is the target total epoch count")
+        saved_channels = resume_data.get("input_channels", {})
+        if saved_channels and saved_channels.get("gated") not in (None, 1, 5):
+            parser.error(f"Unsupported saved NIR channel count: {saved_channels.get('gated')}")
     if args.epochs < 1 or args.lr <= 0 or not 0 < args.val_fraction < 1:
         parser.error("Require epochs >= 1, lr > 0 and 0 < val-fraction < 1.")
     if args.from_scratch and args.freeze_encoders:
@@ -263,6 +292,14 @@ def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
 
     model, loaded = make_model(args.checkpoint, device, fusion_checkpoint,
                                from_scratch=args.from_scratch, fusion_type=fusion_type)
+    if resume_data is not None:
+        try:
+            model.load_state_dict(resume_data["model"], strict=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Resume model state is incompatible with the requested architecture: {args.resume}"
+            ) from exc
+        print(f"Restored model state from {args.resume.resolve()}", flush=True)
     nir_channels = model.backbone["gated"].in_channels
     dataset.nir_channels = nir_channels
     if args.freeze_encoders:
@@ -303,6 +340,14 @@ def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
     }
     write_json(args.output / "run_config.json", run_config)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr)
+    start_epoch = 0
+    if resume_data is not None:
+        try:
+            optimizer.load_state_dict(resume_data["optimizer"])
+        except Exception as exc:
+            raise RuntimeError(f"Resume optimizer state is incompatible with the model: {args.resume}") from exc
+        start_epoch = int(resume_data.get("epoch", 0))
+        print(f"Restored optimizer state; continuing at epoch {start_epoch + 1}/{args.epochs}", flush=True)
     criterion = BerHuSparseLoss().to(device)
     loss_log = args.output / "loss.txt"
     with loss_log.open("a", encoding="utf-8") as log:
@@ -325,8 +370,8 @@ def main(*, auxiliary_input="dolp", dataset_class=None, fusion_type="iaff"):
         "checkpoint": source_checkpoint,
     })
 
-    history = []
-    for epoch in range(args.epochs):
+    history = list(resume_data.get("history", [])) if resume_data is not None else []
+    for epoch in range(start_epoch, args.epochs):
         set_training_mode(model)
         train_values = []
         train_mae = FinalOutputMAE()
