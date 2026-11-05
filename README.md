@@ -348,13 +348,13 @@ rectified with this same calibration.
 
 # qmy
 
-python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\left.jpg" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\right.jpg" --output "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\dolp_pim_finetune"
+python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_intensity_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\left.jpg" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\right.jpg" --output "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\5\rgb_pim_finetune"
 
 python run_gatedrccbstereo_stereo.py --checkpoint ".\rgb_nir_lidar_finetune_run\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\gatedrccbstereo_latest1_50_result_depthold_校正"
 
 
 
-python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_dolp_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\dolpall_pim_finetune"
+python run_gatedrccbstereo_stereo.py --checkpoint "D:\Desktop\txt\txt2\rewrite\DEPTH\GatedRCCBStereo\rgb_nir_lidar_intensity_pim_finetune_depth_new\latest.pt" --left "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_rgb.png" --right "D:\Desktop\txt\txt2\rewrite\DEPTH\depth-视差图代码\data\val\2000-01-01-12-22-49_747_S0_nir.png" --output "..\depth-视差图代码\data\10\rgbpall_pim_finetune"
 
 python -u train_rgb_nir_lidar_finetune.py 
   --depth-dir "I:\KEDADATA\data\fog\depth_new" 
@@ -368,6 +368,8 @@ python -u train_rgb_nir_lidar_finetune.py
 
 # PIM融合立体匹配
 python -u train_rgb_nir_lidar_dolp_pim_finetune.py --from-scratch --epochs 20 --seed 17 --checkpoint-encoders
+
+python -u train_rgb_nir_lidar_intensity_pim_finetune.py --epochs 20 --seed 17 --checkpoint-encoders
 
 --from-scratch代表整个模型随机初始化；
 不加--from-scratch 基础模型和编码器使用预训练权重，只有 PIM 随机初始化
