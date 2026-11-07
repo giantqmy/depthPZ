@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,13 @@ from train_rgb_nir_lidar_dolp_finetune import (
 )
 
 
+CS_STEREO_ROOT = ROOT.parent / "cs-stereo"
+if not CS_STEREO_ROOT.is_dir():
+    raise FileNotFoundError(f"Cannot find cs-stereo STN source directory: {CS_STEREO_ROOT}")
+sys.path.insert(0, str(CS_STEREO_ROOT))
+from stn import STN as CSSTereoSTN, stn_init as cs_stn_init
+
+
 DATA_ROOT = Path(r"I:\KEDADATA\data\fog")
 DEFAULT_RGB = DATA_ROOT / "RGBS0"
 DEFAULT_NIR = DATA_ROOT / "NIRS0"
@@ -48,9 +56,53 @@ DEFAULT_DENSE_DEPTH = DATA_ROOT / "depth"
 DEFAULT_SPARSE_GT = DATA_ROOT / "depth_gt_sparse"
 DEFAULT_RGB_DOLP = DATA_ROOT / "RGBDOLP_color"
 DEFAULT_NIR_DOLP = DATA_ROOT / "NIRuseI4" / "output_dolp"
-DEFAULT_OUTPUT = ROOT / "rgb_nir_lidar_dolp_pim_finetune_correct_scale_sparse_gt"
+DEFAULT_OUTPUT = ROOT / "rgb_stn_pseudonir_nir_dolp_pim_finetune_correct_scale_sparse_gt"
 
 DEPTH_METRES_PER_UINT16 = 1.0 / 256.0
+
+
+def cs_stereo_pyramid(image: torch.Tensor, levels: int = 4) -> list[torch.Tensor]:
+    """Match cs-stereo's anti-aliased image pyramid for the STN filter network."""
+    _, _, height, width = image.shape
+    pyramid = [image]
+    current = image
+    for level in range(1, levels):
+        current = (
+            current[:, :, :-2, :-2] / 16.0
+            + current[:, :, 1:-1, :-2] / 8.0
+            + current[:, :, 2:, :-2] / 16.0
+            + current[:, :, :-2, 1:-1] / 8.0
+            + current[:, :, 1:-1, 1:-1] / 4.0
+            + current[:, :, 2:, 1:-1] / 8.0
+            + current[:, :, :-2, 2:] / 16.0
+            + current[:, :, 1:-1, 2:] / 8.0
+            + current[:, :, 2:, 2:] / 16.0
+        )
+        current = torch.nn.functional.pad(current, (1, 1, 1, 1), mode="replicate")
+        current = torch.nn.functional.interpolate(
+            current,
+            size=(height // (2 ** level), width // (2 ** level)),
+            mode="bilinear",
+            align_corners=False,
+        )
+        pyramid.append(current)
+    return pyramid
+
+
+def transform_left_rgb_to_pseudo_nir(inputs: list[dict], stn: torch.nn.Module) -> torch.Tensor:
+    """Apply cs-stereo STN to the left RGB image and replace model RGB input."""
+    rgb_pair = inputs[0]["img_ref"]
+    nir_pair = inputs[0]["img_comp"]
+    rgb = (rgb_pair[0:1].float() / 255.0).clamp(0.0, 1.0)
+    nir = (nir_pair[0:1, :1].float() / 255.0).clamp(0.0, 1.0)
+    rgb_mean = rgb.mean(dim=(1, 2, 3), keepdim=True)
+    nir_mean = nir.mean(dim=(1, 2, 3), keepdim=True)
+    # Match cs-stereo's target/source exposure direction: NIR / RGB.
+    exposure_ratio = nir_mean / rgb_mean.clamp(min=1e-4)
+    pseudo_nir = stn(cs_stereo_pyramid(rgb), exposure_ratio)[0].clamp(0.0, 1.0)
+    pseudo_nir_rgb = (pseudo_nir * 255.0).repeat(1, 3, 1, 1)
+    inputs[0]["img_ref"] = torch.cat((pseudo_nir_rgb, pseudo_nir_rgb), dim=0)
+    return pseudo_nir
 
 
 class CorrectScalePIMDataset(RGBNIRDoLPLiDARDataset):
@@ -113,16 +165,26 @@ class CorrectScalePIMDataset(RGBNIRDoLPLiDARDataset):
         if not reference_keys:
             raise RuntimeError(f"No RGB inputs found in {self.rgb_dir}")
         problems = []
+        extras_ignored = []
         for label, mapping in sources.items():
             missing = sorted(reference_keys - set(mapping))
             extra = sorted(set(mapping) - reference_keys)
-            if missing or extra:
+            if missing:
                 problems.append(
-                    f"{label}: missing={missing[:5]} ({len(missing)}), "
-                    f"extra={extra[:5]} ({len(extra)})"
+                    f"{label}: missing={missing[:5]} ({len(missing)})"
+                )
+            if extra:
+                extras_ignored.append(
+                    f"{label}: extra={extra[:5]} ({len(extra)})"
                 )
         if problems:
-            raise RuntimeError("Dataset prefixes do not match exactly:\n" + "\n".join(problems))
+            raise RuntimeError("Dataset prefixes are missing required fog samples:\n" + "\n".join(problems))
+        if extras_ignored:
+            print(
+                "Ignoring files whose prefixes are not in the fog RGB set:\n"
+                + "\n".join(extras_ignored),
+                flush=True,
+            )
 
         keys = sorted(reference_keys)
         self.samples = [(rgb[k], nir[k], dense[k], k) for k in keys]
@@ -291,6 +353,8 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
     calib = calibration()
@@ -335,8 +399,8 @@ def main() -> None:
     if args.resume is not None:
         resume_data = torch.load(str(args.resume), map_location="cpu", weights_only=True)
         config = resume_data.get("run_config", {})
-        if config.get("trainer_version") != "correct_scale_dense_train_sparse_gt_metrics_v1":
-            raise ValueError("Refusing to resume an old or wrong-scale training checkpoint")
+        if config.get("trainer_version") != "correct_scale_dense_train_sparse_gt_metrics_stn_v1":
+            raise ValueError("Resume checkpoint is not from the RGB-to-pseudo-NIR STN trainer")
         if config.get("depth_scale_m_per_uint16") != DEPTH_METRES_PER_UINT16:
             raise ValueError("Resume checkpoint does not use the required 1/256 depth scale")
         if bool(config.get("from_scratch")) != bool(args.from_scratch):
@@ -350,8 +414,14 @@ def main() -> None:
         from_scratch=args.from_scratch,
         fusion_type="pim",
     )
+    stn = CSSTereoSTN(in_shape=(512, 640), filt=True)
+    stn.apply(cs_stn_init)
     if resume_data is not None:
         model.load_state_dict(resume_data["model"], strict=True)
+        if "stn" not in resume_data:
+            raise ValueError("Resume checkpoint is missing the trained RGB-to-NIR STN state")
+        stn.load_state_dict(resume_data["stn"], strict=True)
+    stn.to(device)
     dataset.nir_channels = model.backbone["gated"].in_channels
     if args.freeze_encoders:
         for encoders in (model.backbone, model.dolp_backbone):
@@ -362,7 +432,9 @@ def main() -> None:
                               shuffle=True, num_workers=0)
     val_loader = DataLoader(torch.utils.data.Subset(dataset, val_idx), batch_size=None,
                             shuffle=False, num_workers=0)
-    optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr)
+    trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+    trainable_parameters.extend(p for p in stn.parameters() if p.requires_grad)
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.lr)
     start_epoch = 0
     history = []
     if resume_data is not None:
@@ -372,12 +444,15 @@ def main() -> None:
 
     criterion = BerHuSparseLoss().to(device)
     initialization = "random_all_dolp_wavelet_pim" if args.from_scratch else (
-        "pretrained_encoders_stereo_dolp_random_wavelet_pim"
+        "pretrained_stereo_encoders_random_rgb_to_nir_stn_and_wavelet_pim"
     )
     run_config = {
-        "trainer_version": "correct_scale_dense_train_sparse_gt_metrics_v1",
-        "architecture": "rgb_nir_dolp_4encoders_wavelet_pim256_v1",
+        "trainer_version": "correct_scale_dense_train_sparse_gt_metrics_stn_v1",
+        "architecture": "rgb_to_pseudonir_cs_stn_nir_dolp_4encoders_wavelet_pim256_v1",
         "fusion_type": "pim",
+        "rgb_to_pseudonir": "cs-stereo STN/EDNet: learned per-pixel RGB channel weights, summed to mono and scaled by NIR/RGB mean exposure ratio",
+        "stn_source": str((CS_STEREO_ROOT / "stn.py").resolve()),
+        "stn_pretrained_checkpoint": None,
         "from_scratch": args.from_scratch,
         "initialization": initialization,
         "source_checkpoint": None if args.from_scratch else str(args.checkpoint.resolve()),
@@ -402,7 +477,8 @@ def main() -> None:
             "rgb_dolp": str(args.rgb_dolp_dir.resolve()),
             "nir_dolp": str(args.nir_dolp_dir.resolve()),
         },
-        "input_channels": {"rccb": 3, "gated": dataset.nir_channels,
+        "input_channels": {"rgb_raw_for_stn": 3, "rccb_pseudonir_replicated": 3,
+                           "gated": dataset.nir_channels,
                            "rgb_dolp": 3, "nir_dolp": 1},
         "model_args": vars(model.args),
     }
@@ -438,8 +514,10 @@ def main() -> None:
         for phase, loader in (("train", train_loader), ("val", val_loader)):
             if phase == "train":
                 set_training_mode(model)
+                stn.train()
             else:
                 model.eval()
+                stn.eval()
             losses = []
             metrics = SparseGroundTruthMetrics(calib["fx"], calib["baseline"])
             total_steps = len(loader)
@@ -447,6 +525,7 @@ def main() -> None:
             with grad_context:
                 for step, batch in enumerate(loader, start=1):
                     inputs, metas = move_sample(batch, device)
+                    pseudo_nir = transform_left_rgb_to_pseudo_nir(inputs, stn)
                     if phase == "train":
                         optimizer.zero_grad(set_to_none=True)
                     outputs = model(
@@ -469,17 +548,22 @@ def main() -> None:
                     if phase == "train":
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), 1.0, error_if_nonfinite=True
+                            trainable_parameters, 1.0, error_if_nonfinite=True
                         )
                         optimizer.step()
                     losses.append(float(loss.detach().cpu()))
                     if step == 1 or step % max(1, args.log_interval) == 0 or step == total_steps:
+                        pseudo_range = (
+                            float(pseudo_nir.detach().min().cpu()),
+                            float(pseudo_nir.detach().max().cpu()),
+                        )
                         print(
                             f"epoch {epoch + 1}/{args.epochs} {phase} {step}/{total_steps}: "
                             f"loss={losses[-1]:.6f} avg={np.mean(losses):.6f} "
                             f"sparse_depth_mae_m={metric_text(sample_metrics['depth_mae_m'])} "
                             f"sparse_disp_mae_px={metric_text(sample_metrics['disp_mae_px'])} "
-                            f"valid={sample_metrics['valid_pixels']}",
+                            f"valid={sample_metrics['valid_pixels']} "
+                            f"pseudo_nir_range={pseudo_range[0]:.3f}..{pseudo_range[1]:.3f}",
                             flush=True,
                         )
             phase_results[phase] = {"loss": float(np.mean(losses)), **metrics.summary()}
@@ -506,6 +590,7 @@ def main() -> None:
 
         checkpoint = {
             "model": model.state_dict(),
+            "stn": stn.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch + 1,
             "history": history,

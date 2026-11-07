@@ -1,0 +1,47 @@
+{
+  "left": "I:\\KEDADATA\\data\\fog\\RGBS0\\2000-01-01-12-15-33_340_S0_rgb.png",
+  "right": "I:\\KEDADATA\\data\\fog\\NIRS0\\2000-01-01-12-15-33_340_S0_nir.png",
+  "checkpoint": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\gatedrccbstereo.pt",
+  "device": "cuda",
+  "loaded_parameter_tensors": 2724,
+  "model_stream": "RGB-left and NIR-right through their checkpoint-restored encoders",
+  "input_channels": {
+    "rgb": 3,
+    "nir": 5
+  },
+  "encoders_loaded_from_checkpoint": true,
+  "csm_enabled": false,
+  "secondary_cross_modal_matching_enabled": false,
+  "rectification": "applied_undistortion_and_stereo_rectification",
+  "raw_left": "I:\\KEDADATA\\data\\fog\\RGBS0\\2000-01-01-12-15-33_340_S0_rgb.png",
+  "raw_right": "I:\\KEDADATA\\data\\fog\\NIRS0\\2000-01-01-12-15-33_340_S0_nir.png",
+  "rectified_outputs": {
+    "left": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\original_intensity_inference_2000-01-01-12-15-33_340\\left_rectified.png",
+    "right": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\original_intensity_inference_2000-01-01-12-15-33_340\\right_rectified.png"
+  },
+  "calibration_image_size_wh": [
+    640,
+    512
+  ],
+  "calibration_baseline_m": 0.055107880062194525,
+  "input_size_wh": [
+    640,
+    512
+  ],
+  "disparity_units": "pixels at input resolution",
+  "disparity_convention": "left_x - right_x; positive values retained in valid mask",
+  "valid_fraction": 0.88104248046875,
+  "valid_disparity_percentiles_0_25_50_75_95_98_100": [
+    0.1546872854232788,
+    25.28450059890747,
+    96.48847961425781,
+    121.70675277709961,
+    151.3326454162597,
+    166.6008041381836,
+    200.91456604003906
+  ],
+  "visualization_scale_pixels_p98": 166.60079956054688,
+  "input_adapter": "NIR grayscale replicated to 5 channels",
+  "transfer_note": "All inference parameters restored from the supplied checkpoint; accuracy requires ground-truth evaluation.",
+  "rectification_note": "Calibration matches sgbmS0.py. Use --skip-rectification only for already rectified inputs."
+}

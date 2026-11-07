@@ -1,0 +1,68 @@
+{
+  "trainer_version": "correct_scale_dense_train_sparse_gt_metrics_stn_v1",
+  "architecture": "rgb_to_pseudonir_cs_stn_nir_dolp_4encoders_wavelet_pim256_v1",
+  "fusion_type": "pim",
+  "rgb_to_pseudonir": "cs-stereo STN/EDNet: learned per-pixel RGB channel weights, summed to mono and scaled by RGB/NIR mean exposure ratio",
+  "stn_source": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\cs-stereo\\stn.py",
+  "stn_pretrained_checkpoint": null,
+  "from_scratch": false,
+  "initialization": "pretrained_stereo_encoders_random_rgb_to_nir_stn_and_wavelet_pim",
+  "source_checkpoint": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\gatedrccbstereo.pt",
+  "depth_scale_m_per_uint16": 0.00390625,
+  "training_supervision": "dense_depth_u16_x256_rectified_by_dataset",
+  "metric_ground_truth": "independent_sparse_lidar_u16_x256_already_rectified",
+  "metric_valid_mask": "sparse_gt_depth_m > 0 and finite prediction",
+  "sparse_metric_max_depth_filter": null,
+  "max_train_depth": 220.0,
+  "seed": 17,
+  "limit": null,
+  "val_fraction": 0.1,
+  "lr": 1e-05,
+  "epochs": 20,
+  "freeze_encoders": false,
+  "checkpoint_encoders": true,
+  "data_dirs": {
+    "rgb": "I:\\KEDADATA\\data\\fog\\RGBS0",
+    "nir": "I:\\KEDADATA\\data\\fog\\NIRS0",
+    "dense_supervision": "I:\\KEDADATA\\data\\fog\\depth",
+    "sparse_evaluation_gt": "I:\\KEDADATA\\data\\fog\\depth_gt_sparse",
+    "rgb_dolp": "I:\\KEDADATA\\data\\fog\\RGBDOLP_color",
+    "nir_dolp": "I:\\KEDADATA\\data\\fog\\NIRuseI4\\output_dolp"
+  },
+  "input_channels": {
+    "rgb_raw_for_stn": 3,
+    "rccb_pseudonir_replicated": 3,
+    "gated": 5,
+    "rgb_dolp": 3,
+    "nir_dolp": 1
+  },
+  "model_args": {
+    "model_name": "gatedrccbstereo_heterogeneous_stereo_only",
+    "input_cams": [
+      "rccb",
+      "gated"
+    ],
+    "input_channels": {
+      "rccb": 3,
+      "gated": 5
+    },
+    "encoder_lightweight": false,
+    "hidden_dim": 128,
+    "out_channels": 256,
+    "rum_cor_planes": 36,
+    "rum_mask_size": 4,
+    "csm_init": false,
+    "do_pose_update": false,
+    "ref_modality": "rccb",
+    "comp_modality": "gated",
+    "ref_side": "left",
+    "refinement_iterations": 4,
+    "refinement_iterations_hd": 2,
+    "max_depth": {
+      "rccb": 220.0
+    },
+    "min_depth": {
+      "rccb": 1.0
+    }
+  }
+}

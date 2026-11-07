@@ -1,0 +1,40 @@
+{
+  "sample_key": "2000-01-01-12-15-33_340",
+  "checkpoint": "D:\\Desktop\\txt\\txt2\\rewrite\\DEPTH\\GatedRCCBStereo\\rgb_nir_lidar_dolp_pim_finetune_correct_scale_sparse_gt\\latest.pt",
+  "checkpoint_epoch": 20,
+  "architecture": "rgb_nir_dolp_4encoders_wavelet_pim256_v1",
+  "training_trainer_version": "correct_scale_dense_train_sparse_gt_metrics_v1",
+  "training_depth_scale": 0.00390625,
+  "inputs": {
+    "rgb": "I:\\KEDADATA\\data\\fog\\RGBS0\\2000-01-01-12-15-33_340_S0_rgb.png",
+    "nir": "I:\\KEDADATA\\data\\fog\\NIRS0\\2000-01-01-12-15-33_340_S0_nir.png",
+    "rgb_dolp": "I:\\KEDADATA\\data\\fog\\RGBDOLP_color\\2000-01-01-12-15-33_340_dolp_color_rgb.png",
+    "nir_dolp": "I:\\KEDADATA\\data\\fog\\NIRuseI4\\output_dolp\\2000-01-01-12-15-33_340_dolp_nir.png"
+  },
+  "device": "cuda",
+  "input_channels": {
+    "rgb": 3,
+    "nir": 5,
+    "rgb_dolp": 3,
+    "nir_dolp": 1
+  },
+  "rectification": "applied to all four raw-camera inputs",
+  "reference_view": "rectified left RGB camera",
+  "disparity_convention": "left_x - right_x",
+  "disparity_units": "pixels at 640x512 input resolution",
+  "depth_units": "metres",
+  "fx_rectified_px": 1229.3693702278754,
+  "baseline_m": 0.055107880062194525,
+  "focal_times_baseline_px_m": 67.74793980665338,
+  "valid_fraction": 0.9916259765625,
+  "disparity_percentiles_0_25_50_75_95_98_100": [
+    0.307945191860199,
+    1.5573539435863495,
+    2.9395002126693726,
+    6.3879358768463135,
+    10.880585432052612,
+    11.9813157081604,
+    67.74794006347656
+  ],
+  "visualization_scale_pixels_p98": 11.981316566467285
+}

@@ -1,0 +1,3 @@
+# Loss uses dense x256 supervision; all metrics use independent sparse LiDAR GT only.
+epoch	train_loss	val_loss	train_depth_mae_m	train_depth_rmse_m	train_depth_abs_rel	train_disp_mae_px	train_valid_pixels	val_depth_mae_m	val_depth_rmse_m	val_depth_abs_rel	val_disp_mae_px	val_valid_pixels
+1	516.23718262	675.15625000	22.806659	28.236984	0.878214	31.875230	5349	28.356806	38.099390	1.152415	33.434110	4882
