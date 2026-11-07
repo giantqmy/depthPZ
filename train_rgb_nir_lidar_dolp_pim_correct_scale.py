@@ -91,17 +91,19 @@ def cs_stereo_pyramid(image: torch.Tensor, levels: int = 4) -> list[torch.Tensor
 
 def transform_left_rgb_to_pseudo_nir(inputs: list[dict], stn: torch.nn.Module) -> torch.Tensor:
     """Apply cs-stereo STN to the left RGB image and replace model RGB input."""
-    rgb_pair = inputs[0]["img_ref"]
-    nir_pair = inputs[0]["img_comp"]
-    rgb = (rgb_pair[0:1].float() / 255.0).clamp(0.0, 1.0)
-    nir = (nir_pair[0:1, :1].float() / 255.0).clamp(0.0, 1.0)
+    rgb = torch.cat([sample["img_ref"][0:1] for sample in inputs], dim=0)
+    nir = torch.cat([sample["img_comp"][0:1, :1] for sample in inputs], dim=0)
+    rgb = (rgb.float() / 255.0).clamp(0.0, 1.0)
+    nir = (nir.float() / 255.0).clamp(0.0, 1.0)
     rgb_mean = rgb.mean(dim=(1, 2, 3), keepdim=True)
     nir_mean = nir.mean(dim=(1, 2, 3), keepdim=True)
     # Match cs-stereo's target/source exposure direction: NIR / RGB.
     exposure_ratio = nir_mean / rgb_mean.clamp(min=1e-4)
     pseudo_nir = stn(cs_stereo_pyramid(rgb), exposure_ratio)[0].clamp(0.0, 1.0)
     pseudo_nir_rgb = (pseudo_nir * 255.0).repeat(1, 3, 1, 1)
-    inputs[0]["img_ref"] = torch.cat((pseudo_nir_rgb, pseudo_nir_rgb), dim=0)
+    for index, sample in enumerate(inputs):
+        sample_pseudo = pseudo_nir_rgb[index:index + 1]
+        sample["img_ref"] = torch.cat((sample_pseudo, sample_pseudo), dim=0)
     return pseudo_nir
 
 
@@ -327,6 +329,8 @@ def parse_args():
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--epochs", type=int, default=20,
                         help="target total epoch count when resuming")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="number of samples per optimizer step (default: 1)")
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--max-train-depth", type=float, default=220.0,
                         help="dense supervision/model range; sparse metrics remain unfiltered")
@@ -339,8 +343,8 @@ def parse_args():
     parser.add_argument("--checkpoint-encoders", action="store_true")
     parser.add_argument("--check-data-only", action="store_true")
     args = parser.parse_args()
-    if args.epochs < 1 or args.lr <= 0 or not 0 < args.val_fraction < 1:
-        parser.error("Require epochs >= 1, lr > 0 and 0 < val-fraction < 1")
+    if args.epochs < 1 or args.batch_size < 1 or args.lr <= 0 or not 0 < args.val_fraction < 1:
+        parser.error("Require epochs >= 1, batch-size >= 1, lr > 0 and 0 < val-fraction < 1")
     if args.limit is not None and args.limit < 2:
         parser.error("--limit must be at least 2")
     if args.from_scratch and args.freeze_encoders:
@@ -428,9 +432,12 @@ def main() -> None:
             for parameter in encoders.parameters():
                 parameter.requires_grad_(False)
 
-    train_loader = DataLoader(torch.utils.data.Subset(dataset, train_idx), batch_size=None,
+    collate_samples = lambda samples: samples
+    train_loader = DataLoader(torch.utils.data.Subset(dataset, train_idx),
+                              batch_size=args.batch_size, collate_fn=collate_samples,
                               shuffle=True, num_workers=0)
-    val_loader = DataLoader(torch.utils.data.Subset(dataset, val_idx), batch_size=None,
+    val_loader = DataLoader(torch.utils.data.Subset(dataset, val_idx),
+                            batch_size=args.batch_size, collate_fn=collate_samples,
                             shuffle=False, num_workers=0)
     trainable_parameters = [p for p in model.parameters() if p.requires_grad]
     trainable_parameters.extend(p for p in stn.parameters() if p.requires_grad)
@@ -465,6 +472,7 @@ def main() -> None:
         "seed": args.seed,
         "limit": args.limit,
         "val_fraction": args.val_fraction,
+        "batch_size": args.batch_size,
         "lr": args.lr,
         "epochs": args.epochs,
         "freeze_encoders": args.freeze_encoders,
@@ -524,7 +532,9 @@ def main() -> None:
             grad_context = torch.enable_grad() if phase == "train" else torch.no_grad()
             with grad_context:
                 for step, batch in enumerate(loader, start=1):
-                    inputs, metas = move_sample(batch, device)
+                    moved = [move_sample(sample, device) for sample in batch]
+                    inputs = [item[0][0] for item in moved]
+                    metas = [item[1][0] for item in moved]
                     pseudo_nir = transform_left_rgb_to_pseudo_nir(inputs, stn)
                     if phase == "train":
                         optimizer.zero_grad(set_to_none=True)
@@ -544,7 +554,10 @@ def main() -> None:
                         raise FloatingPointError(
                             f"Non-finite {phase} loss at epoch={epoch + 1}, step={step}: {details}"
                         )
-                    sample_metrics = metrics.update(outputs, batch["eval_sparse_depth_m"])
+                    sparse_gt = torch.stack(
+                        [sample["eval_sparse_depth_m"] for sample in batch], dim=0
+                    )
+                    sample_metrics = metrics.update(outputs, sparse_gt)
                     if phase == "train":
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(
