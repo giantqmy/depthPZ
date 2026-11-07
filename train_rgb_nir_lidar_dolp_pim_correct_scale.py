@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -42,11 +41,7 @@ from train_rgb_nir_lidar_dolp_finetune import (
 )
 
 
-CS_STEREO_ROOT = ROOT.parent / "cs-stereo"
-if not CS_STEREO_ROOT.is_dir():
-    raise FileNotFoundError(f"Cannot find cs-stereo STN source directory: {CS_STEREO_ROOT}")
-sys.path.insert(0, str(CS_STEREO_ROOT))
-from stn import STN as CSSTereoSTN, stn_init as cs_stn_init
+from networks.cs_stereo_stn import STN as CSSTereoSTN, stn_init as cs_stn_init
 
 
 DATA_ROOT = Path(r"I:\KEDADATA\data\fog")
@@ -458,7 +453,7 @@ def main() -> None:
         "architecture": "rgb_to_pseudonir_cs_stn_nir_dolp_4encoders_wavelet_pim256_v1",
         "fusion_type": "pim",
         "rgb_to_pseudonir": "cs-stereo STN/EDNet: learned per-pixel RGB channel weights, summed to mono and scaled by NIR/RGB mean exposure ratio",
-        "stn_source": str((CS_STEREO_ROOT / "stn.py").resolve()),
+        "stn_source": "networks/cs_stereo_stn (vendored cs-stereo STN/EDNet; MIT)",
         "stn_pretrained_checkpoint": None,
         "from_scratch": args.from_scratch,
         "initialization": initialization,
